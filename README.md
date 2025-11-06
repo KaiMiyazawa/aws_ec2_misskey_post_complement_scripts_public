@@ -6,7 +6,7 @@ AWS EC2 上で Misskey の欠損データを検出・補完し、新しい S3 �
 
 ## 目的と背景
 
-REF_jri_misskey_posts_collector では `data_upload.py`（東京リージョン）と `data_upload_en.py`（バージニアリージョン）がそれぞれ `miyazawa1s3/misskey` と `miyazawa1s3-backup/misskey` に10分刻みの JSONL を転送しています。本ドキュメントで紹介する `aws_complement/run_pipeline.py` は、これら2つのバケットを直接走査して欠損を特定し、Misskey API から補完したデータを **第3の領域（例: `miyazawa1s3/misskey_complement`）** に保存します。保存後は再度 S3 側を確認し、欠損が解消しているかを検証します。
+REF_jri_misskey_posts_collector では `data_upload.py`（東京リージョン）と `data_upload_en.py`（バージニアリージョン）がそれぞれ `miyazawa1s3/misskey` と `miyazawa1s3-backup/misskey` に10分刻みの JSONL を転送しています。本ドキュメントで紹介する `aws_complement/run_pipeline.py` は、これら2つのバケットを **`--dataset jp` / `--dataset en` の切り替えで選択的に走査** して欠損を特定し、Misskey API から補完したデータを **第3の領域（例: `miyazawa1s3/misskey_complement`）** に保存します。保存後は再度 S3 側を確認し、欠損が解消しているかを検証します。
 
 EC2 インスタンスはメモリ／ディスクが潤沢ではない前提で、以下の点に気を配っています。
 
@@ -23,7 +23,7 @@ EC2 インスタンスはメモリ／ディスクが潤沢ではない前提で�
 3. Misskey API トークン（`MISSKEY_TOKEN` 環境変数、または `--token` 引数で指定）
 4. AWS 認証情報（`aws configure` もしくは環境変数/Instance Profile）
 5. 参照・補完用の S3 バケット
-    - 既存: `miyazawa1s3/misskey`, `miyazawa1s3-backup/misskey`
+    - 既存: `miyazawa1s3/misskey`（JP 用）, `miyazawa1s3-backup/misskey`（EN 用）
     - 新設: `miyazawa1s3/misskey_complement`（名称は `--complement-bucket/prefix` で変更可能）
 
 ---
@@ -50,6 +50,7 @@ python aws_complement/run_pipeline.py \
   --end 2025-08-10T23:50 \
   --token "$MISSKEY_TOKEN" \
   --aws-region ap-northeast-1 \
+  --dataset jp \
   --primary-bucket miyazawa1s3 \
   --primary-prefix misskey \
   --backup-bucket miyazawa1s3-backup \
@@ -67,7 +68,8 @@ python aws_complement/run_pipeline.py \
 |------|------|--------|
 | `--start` / `--end` | JST の開始/終了スロット。`2025-08-01T00:00` 形式で入力 | 必須 |
 | `--slot-minutes` | スロット幅（分） | 10 |
-| `--primary-*` / `--backup-*` | 欠損判定に使う S3 バケット | `miyazawa1s3` / `miyazawa1s3-backup` |
+| `--dataset` | 欠損判定対象 (`jp` で一次, `en` でバックアップ) | `jp` |
+| `--primary-*` / `--backup-*` | `jp`/`en` 選択時に使う S3 バケット名 | `miyazawa1s3` / `miyazawa1s3-backup` |
 | `--complement-*` | 補完結果を置くバケット/プレフィックス | `miyazawa1s3` / `misskey_complement` |
 | `--token` | Misskey API トークン | `MISSKEY_TOKEN` |
 | `--mode` | `search` か `timeline` | `search` |
@@ -76,7 +78,7 @@ python aws_complement/run_pipeline.py \
 | `--sleep` | Misskey API のページング間隔 | 5 |
 | `--dry-run` | 欠損状況を表示するだけで補完しない | 無効 |
 
-### 2. 欠損状況のみ確認
+### 2. 欠損状況のみ確認（JP または EN を選択）
 
 ```
 python aws_complement/run_pipeline.py \
@@ -86,6 +88,8 @@ python aws_complement/run_pipeline.py \
 ```
 
 `--dry-run` では S3 をスキャンして欠損スロットをログ出力するだけです。EC2 の小規模インスタンスで様子を見たいときに利用してください。
+
+バックアップ（EN）側だけを確認する場合は `--dataset en --backup-bucket miyazawa1s3-backup` のように指定します。`--dataset` の値に応じて、対応するバケット/プレフィックスが参照されます。
 
 ---
 

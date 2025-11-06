@@ -80,13 +80,16 @@ class AWSComplementPipeline:
 
         self.s3_client = build_s3_client(region_name=args.aws_region, profile=args.aws_profile)
         self.sources: List[BucketSource] = []
-        if args.primary_bucket:
+        if args.dataset == "jp":
+            if not args.primary_bucket:
+                raise SystemExit("JP データセット用のバケット (--primary-bucket) を指定してください。")
             self.sources.append(BucketSource(args.primary_bucket, normalize_prefix(args.primary_prefix)))
-        if args.backup_bucket:
+        elif args.dataset == "en":
+            if not args.backup_bucket:
+                raise SystemExit("EN データセット用のバケット (--backup-bucket) を指定してください。")
             self.sources.append(BucketSource(args.backup_bucket, normalize_prefix(args.backup_prefix)))
-
-        if not self.sources:
-            raise SystemExit("少なくとも1つの参照バケットを指定してください (--primary-bucket など)。")
+        else:  # pragma: no cover - argparse choices guard
+            raise SystemExit(f"Unknown dataset: {args.dataset}")
 
         self.dest_source = BucketSource(
             args.complement_bucket,
@@ -270,6 +273,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--primary-prefix", default="misskey", help="一次バケット側のプレフィックス")
     parser.add_argument("--backup-bucket", default="miyazawa1s3-backup", help="バックアップバケット名")
     parser.add_argument("--backup-prefix", default="misskey", help="バックアップ側のプレフィックス")
+    parser.add_argument("--dataset", choices=["jp", "en"], default="jp", help="欠損チェック対象 (jp: 一次, en: バックアップ)")
     parser.add_argument("--complement-bucket", default="miyazawa1s3", help="補完結果を保存するバケット")
     parser.add_argument("--complement-prefix", default="misskey_complement", help="補完結果のプレフィックス")
     parser.add_argument("--aws-region", help="AWS リージョン (例: ap-northeast-1)")
