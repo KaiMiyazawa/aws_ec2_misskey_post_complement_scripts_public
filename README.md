@@ -6,7 +6,7 @@ AWS EC2 上で Misskey の欠損データを検出・補完し、新しい S3 �
 
 ## 目的と背景
 
-REF_jri_misskey_posts_collector では `data_upload.py`（東京リージョン）と `data_upload_en.py`（バージニアリージョン）がそれぞれ `miyazawa1s3/misskey` と `miyazawa1s3-backup/misskey` に10分刻みの JSONL を転送しています。本ドキュメントで紹介する `aws_complement/run_pipeline.py` は、これら2つのバケットを直接走査して欠損を特定し、Misskey API から補完したデータを **第3のバケット（例: `miyazawa1s3-complement/misskey/complement`）** に保存します。保存後は再度 S3 側を確認し、欠損が解消しているかを検証します。
+REF_jri_misskey_posts_collector では `data_upload.py`（東京リージョン）と `data_upload_en.py`（バージニアリージョン）がそれぞれ `miyazawa1s3/misskey` と `miyazawa1s3-backup/misskey` に10分刻みの JSONL を転送しています。本ドキュメントで紹介する `aws_complement/run_pipeline.py` は、これら2つのバケットを直接走査して欠損を特定し、Misskey API から補完したデータを **第3の領域（例: `miyazawa1s3/misskey_complement`）** に保存します。保存後は再度 S3 側を確認し、欠損が解消しているかを検証します。
 
 EC2 インスタンスはメモリ／ディスクが潤沢ではない前提で、以下の点に気を配っています。
 
@@ -24,7 +24,7 @@ EC2 インスタンスはメモリ／ディスクが潤沢ではない前提で�
 4. AWS 認証情報（`aws configure` もしくは環境変数/Instance Profile）
 5. 参照・補完用の S3 バケット
     - 既存: `miyazawa1s3/misskey`, `miyazawa1s3-backup/misskey`
-    - 新設: `miyazawa1s3-complement/misskey/complement`（名称は `--complement-bucket/prefix` で変更可能）
+    - 新設: `miyazawa1s3/misskey_complement`（名称は `--complement-bucket/prefix` で変更可能）
 
 ---
 
@@ -54,8 +54,8 @@ python aws_complement/run_pipeline.py \
   --primary-prefix misskey \
   --backup-bucket miyazawa1s3-backup \
   --backup-prefix misskey \
-  --complement-bucket miyazawa1s3-complement \
-  --complement-prefix misskey/complement \
+  --complement-bucket miyazawa1s3 \
+  --complement-prefix misskey_complement \
   --mode search \
   --sub-slot-seconds 60 \
   --sleep 5
@@ -68,7 +68,7 @@ python aws_complement/run_pipeline.py \
 | `--start` / `--end` | JST の開始/終了スロット。`2025-08-01T00:00` 形式で入力 | 必須 |
 | `--slot-minutes` | スロット幅（分） | 10 |
 | `--primary-*` / `--backup-*` | 欠損判定に使う S3 バケット | `miyazawa1s3` / `miyazawa1s3-backup` |
-| `--complement-*` | 補完結果を置くバケット/プレフィックス | `miyazawa1s3-complement` / `misskey/complement` |
+| `--complement-*` | 補完結果を置くバケット/プレフィックス | `miyazawa1s3` / `misskey_complement` |
 | `--token` | Misskey API トークン | `MISSKEY_TOKEN` |
 | `--mode` | `search` か `timeline` | `search` |
 | `--sub-slot-seconds` | 1 スロットを細分化して取得する秒数 | 60 |
@@ -101,7 +101,7 @@ python aws_complement/run_pipeline.py \
    既存の `MisskeyClient` をモジュールとしてロードし、`notes/search` (または timeline 系 API) を呼び出します。`--sub-slot-seconds` に応じて 1 分刻みなどで細分化し、`seen_ids` を共有しながら重複を排除します。取得したノートはその場で JSON Lines にシリアライズし、ローカルファイルを作らずに S3 へアップロードします。
 
 4. **S3 へ保存**  
-   デフォルトでは `s3://miyazawa1s3-complement/misskey/complement/YYYY/MM/DD/HH/スロット.jsonl` に保存。S3 メタデータにノート数・最古/最新時刻を記録しておくことで、後工程での Spot チェックが容易になります。
+   デフォルトでは `s3://miyazawa1s3/misskey_complement/YYYY/MM/DD/HH/スロット.jsonl` に保存。S3 メタデータにノート数・最古/最新時刻を記録しておくことで、後工程での Spot チェックが容易になります。
 
 5. **検証**  
    補完後は一次・バックアップ・補完バケットのすべてを対象に再度 S3 キャッシュを構築し、欠損が残っていないかを確認します。未補完スロットがあれば最大 20 件までログに出力し、レート制限や API エラーが起きた箇所を追跡できます。
@@ -152,4 +152,3 @@ python aws_complement/run_pipeline.py \
 ---
 
 以上の構成をベースに、EC2 上での欠損補完フローを自動化してください。不明点があれば `aws_complement/run_pipeline.py --help` を参照のうえ、必要なオプションを追加してください。レビューや改善提案も歓迎です。 
-
