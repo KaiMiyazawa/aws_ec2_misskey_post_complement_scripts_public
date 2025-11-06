@@ -36,8 +36,18 @@ class SlotObjectRef:
 
     bucket: str
     key: str
+    size_bytes: Optional[int] = None
     line_count: Optional[int] = None
     valid: Optional[bool] = None
+    status: str = "unknown"
+
+
+@dataclass
+class SlotInspection:
+    slot_ts: str
+    refs: List[SlotObjectRef]
+    valid_ref: Optional[SlotObjectRef]
+    status: str
 
 
 MIN_VALID_LINES = 100
@@ -90,7 +100,10 @@ class S3SlotInventory:
                     continue
                 filename = key.rsplit("/", 1)[-1]
                 slot_ts = filename[:-6]
-                slot_map.setdefault(slot_ts, []).append(SlotObjectRef(bucket=source.bucket, key=key))
+                size = obj.get("Size")
+                slot_map.setdefault(slot_ts, []).append(
+                    SlotObjectRef(bucket=source.bucket, key=key, size_bytes=size)
+                )
 
         return slot_map
 
@@ -121,6 +134,7 @@ class S3SlotInventory:
         except ClientError as exc:
             logging.warning("Failed to fetch %s/%s: %s", ref.bucket, ref.key, exc)
             ref.line_count = None
+            ref.status = "fetch_error"
             return False
 
         body = response["Body"]
@@ -130,13 +144,16 @@ class S3SlotInventory:
                 line_count += 1
                 if line_count >= MAX_VALID_LINES + 1:
                     ref.line_count = line_count
+                    ref.status = "too_many_lines"
                     return False
         finally:
             body.close()
 
         ref.line_count = line_count
         if line_count <= MIN_VALID_LINES:
+            ref.status = "too_few_lines"
             return False
+        ref.status = "valid"
         return True
 
     def slot_exists(self, slot_start: datetime, slot_ts: str) -> bool:
@@ -154,6 +171,23 @@ class S3SlotInventory:
             if ref.valid:
                 return True
         return False
+
+    def inspect_slot(self, slot_start: datetime, slot_ts: str) -> SlotInspection:
+        day_key = self._day_key(slot_start)
+        self._ensure_day_cached(day_key, slot_start)
+        refs = list(self._cache.get(day_key, {}).get(slot_ts, []))
+        valid_ref: Optional[SlotObjectRef] = None
+        status = "not_found" if not refs else "invalid"
+        for ref in refs:
+            if ref.valid is None:
+                ref.valid = self._is_valid_object(ref)
+            if ref.valid:
+                valid_ref = ref
+                status = "ok"
+                break
+            else:
+                status = ref.status or "invalid"
+        return SlotInspection(slot_ts=slot_ts, refs=refs, valid_ref=valid_ref, status=status)
 
     def refresh_cache(self) -> None:
         """EC2 長期稼働時に呼び出してキャッシュをクリアする。"""

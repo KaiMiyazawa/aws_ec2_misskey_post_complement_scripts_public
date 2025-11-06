@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import importlib.util
 import json
 import logging
@@ -12,7 +13,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -23,9 +24,9 @@ except ImportError:  # pragma: no cover
 
 if __package__ is None:
     sys.path.insert(0, str(REPO_ROOT))
-    from aws_complement.s3_inventory import BucketSource, S3SlotInventory, build_s3_client
+    from aws_complement.s3_inventory import BucketSource, S3SlotInventory, SlotInspection, build_s3_client
 else:  # pragma: no cover
-    from .s3_inventory import BucketSource, S3SlotInventory, build_s3_client
+    from .s3_inventory import BucketSource, S3SlotInventory, SlotInspection, build_s3_client
 
 JST = timezone(timedelta(hours=9))
 
@@ -70,9 +71,27 @@ class SlotReport:
     slot: Slot
     s3_key: str
     note_count: int
+    byte_size: int
     earliest: Optional[datetime]
     latest: Optional[datetime]
     coverage_ok: bool
+
+
+@dataclass
+class SlotLogRecord:
+    slot: Slot
+    pre_status: str
+    pre_bucket: Optional[str]
+    pre_key: Optional[str]
+    pre_size_bytes: Optional[int]
+    pre_line_count: Optional[int]
+    pre_reason: str
+    post_status: str = "pending"
+    post_bucket: Optional[str] = None
+    post_key: Optional[str] = None
+    post_size_bytes: Optional[int] = None
+    post_line_count: Optional[int] = None
+    post_note_count: Optional[int] = None
 
 
 class AWSComplementPipeline:
@@ -104,6 +123,12 @@ class AWSComplementPipeline:
             normalize_prefix(args.complement_prefix),
         )
 
+        self.run_id = f"{self.args.dataset}_{self.args.start_dt:%Y%m%d%H%M}_{self.args.end_dt:%Y%m%d%H%M}"
+        self.log_dir = Path(self.args.log_dir)
+        self.csv_log_path = self.log_dir / f"complement_log_{self.run_id}.csv"
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.slot_records: Dict[str, SlotLogRecord] = {}
+
         self.inventory = S3SlotInventory(self.s3_client, self.sources)
 
         self.client = MisskeyClient(
@@ -127,8 +152,11 @@ class AWSComplementPipeline:
         missing: List[Slot] = []
         iterator = self._iter_with_progress(slots, f"Scanning slots ({self.args.dataset.upper()})")
         for slot in iterator:
-            if not self.inventory.slot_exists(slot.start, slot.timestamp):
-                missing.append(slot)
+            inspection = self.inventory.inspect_slot(slot.start, slot.timestamp)
+            if inspection.valid_ref:
+                continue
+            self._record_pre_state(slot, inspection)
+            missing.append(slot)
         return missing
 
     def _iter_with_progress(self, items: Sequence[Slot], desc: str) -> Iterable[Slot]:
@@ -144,6 +172,85 @@ class AWSComplementPipeline:
             for item in items:
                 yield item
                 bar.update(1)
+
+    def _record_pre_state(self, slot: Slot, inspection: SlotInspection) -> None:
+        ref = inspection.valid_ref or (inspection.refs[0] if inspection.refs else None)
+        bucket = ref.bucket if ref else None
+        key = ref.key if ref else None
+        size_bytes = ref.size_bytes if ref else None
+        line_count = ref.line_count if ref else None
+        record = SlotLogRecord(
+            slot=slot,
+            pre_status=inspection.status,
+            pre_bucket=bucket,
+            pre_key=key,
+            pre_size_bytes=size_bytes,
+            pre_line_count=line_count,
+            pre_reason=inspection.status,
+        )
+        self.slot_records[slot.timestamp] = record
+
+    def _update_post_state(self, report: SlotReport) -> None:
+        record = self.slot_records.get(report.slot.timestamp)
+        if not record:
+            return
+        record.post_status = "uploaded"
+        record.post_bucket = self.dest_source.bucket
+        record.post_key = report.s3_key
+        record.post_size_bytes = report.byte_size
+        record.post_line_count = report.note_count
+        record.post_note_count = report.note_count
+
+    def _mark_all_post_status(self, status: str) -> None:
+        for record in self.slot_records.values():
+            if record.post_status == "pending":
+                record.post_status = status
+
+    def _write_csv_log(self) -> None:
+        if not self.slot_records:
+            return
+        header = [
+            "run_id",
+            "dataset",
+            "slot_timestamp",
+            "slot_start_iso",
+            "pre_status",
+            "pre_bucket",
+            "pre_key",
+            "pre_size_bytes",
+            "pre_line_count",
+            "pre_reason",
+            "post_status",
+            "post_bucket",
+            "post_key",
+            "post_size_bytes",
+            "post_line_count",
+            "post_note_count",
+        ]
+        with self.csv_log_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(header)
+            for record in sorted(self.slot_records.values(), key=lambda r: r.slot.start):
+                writer.writerow(
+                    [
+                        self.run_id,
+                        self.args.dataset,
+                        record.slot.timestamp,
+                        record.slot.start.isoformat(),
+                        record.pre_status,
+                        record.pre_bucket,
+                        record.pre_key,
+                        record.pre_size_bytes,
+                        record.pre_line_count,
+                        record.pre_reason,
+                        record.post_status,
+                        record.post_bucket,
+                        record.post_key,
+                        record.post_size_bytes,
+                        record.post_line_count,
+                        record.post_note_count,
+                    ]
+                )
 
     def fetch_slot_notes(self, slot: Slot) -> List[dict]:
         seen_ids: set[str] = set()
@@ -209,6 +316,7 @@ class AWSComplementPipeline:
             lines.append(json.dumps(note, ensure_ascii=False))
 
         body = ("\n".join(lines) + "\n").encode("utf-8") if lines else b""
+        byte_size = len(body)
         key = self.build_s3_key(slot)
         metadata = {
             "slot": slot.timestamp,
@@ -234,6 +342,7 @@ class AWSComplementPipeline:
             slot=slot,
             s3_key=key,
             note_count=len(notes),
+            byte_size=byte_size,
             earliest=earliest,
             latest=latest,
             coverage_ok=coverage_ok,
@@ -257,10 +366,13 @@ class AWSComplementPipeline:
         )
         if not missing:
             self.logger.info("No missing slots detected. Nothing to do.")
+            self._write_csv_log()
             return
         if self.args.dry_run:
             for slot in missing:
                 self.logger.info("DRY-RUN missing: %s", slot.timestamp)
+            self._mark_all_post_status("dry-run")
+            self._write_csv_log()
             return
 
         missing_iter = self._iter_with_progress(missing, "Complementing missing slots")
@@ -269,9 +381,11 @@ class AWSComplementPipeline:
             notes = self.fetch_slot_notes(slot)
             report = self.upload_notes(slot, notes)
             self.slot_reports.append(report)
+            self._update_post_state(report)
 
         self.logger.info("Uploaded %d complement files to s3://%s", len(self.slot_reports), self.dest_source.bucket)
         self.perform_verification(slots)
+        self._write_csv_log()
 
     def perform_verification(self, slots: Sequence[Slot]) -> None:
         """補完後に S3 側で欠損が残っていないか検証する。"""
@@ -323,6 +437,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--retry-wait", type=float, default=5.0, help="Misskey API リトライ間隔（秒）")
     parser.add_argument("--dry-run", action="store_true", help="欠損状況の確認のみ行う")
     parser.add_argument("--progress", action="store_true", help="tqdm でプログレスバーを表示する")
+    parser.add_argument("--log-dir", default="logs", help="欠損・アップロードログを書き出すディレクトリ")
     parser.add_argument("--max-slots", type=int, help="処理するスロット数を制限（デバッグ用）")
     parser.add_argument("--verbose", action="store_true", help="デバッグログを有効化")
     return parser

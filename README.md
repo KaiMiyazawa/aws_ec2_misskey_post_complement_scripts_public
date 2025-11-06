@@ -78,6 +78,7 @@ python aws_complement/run_pipeline.py \
 | `--early-coverage-seconds` | カバレッジ判定用の閾値 | 2 |
 | `--sleep` | Misskey API のページング間隔 | 5 |
 | `--progress` | `tqdm` プログレスバーを表示 | 無効 |
+| `--log-dir` | 欠損/アップロードログを書き出すディレクトリ | `logs` |
 | `--dry-run` | 欠損状況を表示するだけで補完しない | 無効 |
 
 ### 2. 欠損状況のみ確認（JP または EN を選択）
@@ -92,6 +93,15 @@ python aws_complement/run_pipeline.py \
 `--dry-run` では S3 をスキャンして欠損スロットをログ出力するだけです。EC2 の小規模インスタンスで様子を見たいときに利用してください。進捗が見たい場合は `--progress` を付けると `tqdm` バーが表示されます（`pip install tqdm` 済みであること）。
 
 バックアップ（EN）側だけを確認する場合は `--dataset en --backup-bucket miyazawa1s3-backup` のように指定します。`--dataset` の値に応じて、対応するバケット/プレフィックスが参照されます。
+
+### ログ出力
+
+実行ごとに `logs/`（`--log-dir` で変更可）へ `complement_log_<dataset>_<start>_<end>.csv` を生成します。各行は欠損判定されたスロットを表し、以下の情報を保持します。
+
+- `pre_*` カラム: 補完前の状態（検出理由、既存ファイルの S3 パス・サイズ・行数）
+- `post_*` カラム: 補完結果（アップロード先パス、ファイルサイズ、行数/ノート数）。Dry-run 時は `post_status=dry-run` になります。
+
+この CSV を参照すれば、欠損理由や補完結果を一つのファイルで追跡できます。
 
 ---
 
