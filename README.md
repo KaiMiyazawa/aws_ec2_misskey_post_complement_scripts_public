@@ -19,7 +19,7 @@ EC2 インスタンスはメモリ／ディスクが潤沢ではない前提で�
 ## 必要環境
 
 1. Python 3.10 以上
-2. `pip install -r requirements.txt` に加え、EC2 上で `boto3` と `requests` が利用できること
+2. `pip install -r requirements.txt` に加え、EC2 上で `boto3`, `requests`, `matplotlib`, `tqdm` が利用できること
 3. Misskey API トークン（`MISSKEY_TOKEN` 環境変数、または `--token` 引数で指定）
 4. AWS 認証情報（`aws configure` もしくは環境変数/Instance Profile）
 5. 参照・補完用の S3 バケット
@@ -59,7 +59,8 @@ python aws_complement/run_pipeline.py \
   --complement-prefix misskey_complement \
   --mode search \
   --sub-slot-seconds 60 \
-  --sleep 5
+  --sleep 5 \
+  --progress
 ```
 
 #### 主要引数
@@ -76,6 +77,7 @@ python aws_complement/run_pipeline.py \
 | `--sub-slot-seconds` | 1 スロットを細分化して取得する秒数 | 60 |
 | `--early-coverage-seconds` | カバレッジ判定用の閾値 | 30 |
 | `--sleep` | Misskey API のページング間隔 | 5 |
+| `--progress` | `tqdm` プログレスバーを表示 | 無効 |
 | `--dry-run` | 欠損状況を表示するだけで補完しない | 無効 |
 
 ### 2. 欠損状況のみ確認（JP または EN を選択）
@@ -87,7 +89,7 @@ python aws_complement/run_pipeline.py \
   --dry-run --verbose
 ```
 
-`--dry-run` では S3 をスキャンして欠損スロットをログ出力するだけです。EC2 の小規模インスタンスで様子を見たいときに利用してください。
+`--dry-run` では S3 をスキャンして欠損スロットをログ出力するだけです。EC2 の小規模インスタンスで様子を見たいときに利用してください。進捗が見たい場合は `--progress` を付けると `tqdm` バーが表示されます（`pip install tqdm` 済みであること）。
 
 バックアップ（EN）側だけを確認する場合は `--dataset en --backup-bucket miyazawa1s3-backup` のように指定します。`--dataset` の値に応じて、対応するバケット/プレフィックスが参照されます。
 

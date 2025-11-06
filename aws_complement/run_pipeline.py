@@ -12,9 +12,14 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import Iterable, List, Optional, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+try:  # pragma: no cover - optional dependency
+    from tqdm import tqdm
+except ImportError:  # pragma: no cover
+    tqdm = None
 
 if __package__ is None:
     sys.path.insert(0, str(REPO_ROOT))
@@ -74,6 +79,9 @@ class AWSComplementPipeline:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
         self.logger = logging.getLogger("aws_complement")
+        self.progress_enabled = bool(getattr(args, "progress", False) and tqdm is not None)
+        if getattr(args, "progress", False) and tqdm is None:
+            self.logger.warning("tqdm がインストールされていないため、プログレスバーを表示できません。`pip install tqdm` を実行してください。")
         token = args.token or os.environ.get("MISSKEY_TOKEN")
         if not token:
             raise SystemExit("Misskey API トークンを --token か環境変数 MISSKEY_TOKEN で指定してください。")
@@ -117,10 +125,25 @@ class AWSComplementPipeline:
 
     def detect_missing_slots(self, slots: Sequence[Slot]) -> List[Slot]:
         missing: List[Slot] = []
-        for slot in slots:
+        iterator = self._iter_with_progress(slots, f"Scanning slots ({self.args.dataset.upper()})")
+        for slot in iterator:
             if not self.inventory.slot_exists(slot.start, slot.timestamp):
                 missing.append(slot)
         return missing
+
+    def _iter_with_progress(self, items: Sequence[Slot], desc: str) -> Iterable[Slot]:
+        if not self.progress_enabled or not items:
+            for item in items:
+                yield item
+            return
+        if tqdm is None:
+            for item in items:
+                yield item
+            return
+        with tqdm(total=len(items), desc=desc, unit="slot") as bar:
+            for item in items:
+                yield item
+                bar.update(1)
 
     def fetch_slot_notes(self, slot: Slot) -> List[dict]:
         seen_ids: set[str] = set()
@@ -227,8 +250,9 @@ class AWSComplementPipeline:
         slots = self.build_slots()
         missing = self.detect_missing_slots(slots)
         self.logger.info(
-            "Total slots: %d / Missing on S3 (primary+backup): %d",
+            "Total slots: %d / Missing on S3 (%s): %d",
             len(slots),
+            self.args.dataset,
             len(missing),
         )
         if not missing:
@@ -239,7 +263,8 @@ class AWSComplementPipeline:
                 self.logger.info("DRY-RUN missing: %s", slot.timestamp)
             return
 
-        for idx, slot in enumerate(missing, start=1):
+        missing_iter = self._iter_with_progress(missing, "Complementing missing slots")
+        for idx, slot in enumerate(missing_iter, start=1):
             self.logger.info("[%d/%d] Complementing %s", idx, len(missing), slot.timestamp)
             notes = self.fetch_slot_notes(slot)
             report = self.upload_notes(slot, notes)
@@ -252,7 +277,8 @@ class AWSComplementPipeline:
         """補完後に S3 側で欠損が残っていないか検証する。"""
         verify_inventory = S3SlotInventory(self.s3_client, self.sources + [self.dest_source])
         remaining = []
-        for slot in slots:
+        verify_iter = self._iter_with_progress(list(slots), "Verifying slots")
+        for slot in verify_iter:
             if not verify_inventory.slot_exists(slot.start, slot.timestamp):
                 remaining.append(slot)
 
@@ -296,6 +322,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--retry", type=int, default=3, help="Misskey API リトライ回数")
     parser.add_argument("--retry-wait", type=float, default=5.0, help="Misskey API リトライ間隔（秒）")
     parser.add_argument("--dry-run", action="store_true", help="欠損状況の確認のみ行う")
+    parser.add_argument("--progress", action="store_true", help="tqdm でプログレスバーを表示する")
     parser.add_argument("--max-slots", type=int, help="処理するスロット数を制限（デバッグ用）")
     parser.add_argument("--verbose", action="store_true", help="デバッグログを有効化")
     return parser
