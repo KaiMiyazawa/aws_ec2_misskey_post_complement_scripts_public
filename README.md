@@ -75,7 +75,7 @@ python aws_complement/run_pipeline.py \
 | `--token` | Misskey API トークン | `MISSKEY_TOKEN` |
 | `--mode` | `search` か `timeline` | `search` |
 | `--sub-slot-seconds` | 1 スロットを細分化して取得する秒数 | 60 |
-| `--early-coverage-seconds` | カバレッジ判定用の閾値 | 30 |
+| `--early-coverage-seconds` | カバレッジ判定用の閾値 | 2 |
 | `--sleep` | Misskey API のページング間隔 | 5 |
 | `--progress` | `tqdm` プログレスバーを表示 | 無効 |
 | `--dry-run` | 欠損状況を表示するだけで補完しない | 無効 |

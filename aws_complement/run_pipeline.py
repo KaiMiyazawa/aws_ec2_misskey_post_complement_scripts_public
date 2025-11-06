@@ -313,7 +313,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sleep", type=float, default=5.0, help="API 呼び出し間隔（秒）")
     parser.add_argument("--sub-slot-seconds", type=int, default=60, help="補完時のサブスロット幅（秒）")
     parser.add_argument("--keep-non-japanese", action="store_true", help="日本語以外も保存する")
-    parser.add_argument("--early-coverage-seconds", type=int, default=30, help="開始カバレッジ判定の閾値（秒）")
+    parser.add_argument("--early-coverage-seconds", type=int, default=2, help="開始カバレッジ判定の閾値（秒）")
     parser.add_argument("--since-id", help="Misskey API sinceId")
     parser.add_argument("--until-id", help="Misskey API untilId")
     parser.add_argument("--query", help="notes/search の query")
