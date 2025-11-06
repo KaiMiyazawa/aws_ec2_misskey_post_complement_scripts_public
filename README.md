@@ -2,6 +2,12 @@
 
 AWS EC2 上で Misskey の欠損データを検出・補完し、新しい S3 バケットに保存して検証するための運用手順をまとめました。既存のローカル向けスクリプトと同じ Misskey API ロジックを内部で再利用しつつ、S3 を直接参照する構成になっています。
 
+典型的な実行例（JP バケットを 2025/08〜10 月で補完、進行状況を表示）:
+
+```bash
+python3 aws_complement/run_pipeline.py --start 2025-08-01T00:00 --end 2025-10-31T23:50 --token "$(cat secrets/misskey_token1.txt)" --dataset jp --progress
+```
+
 ---
 
 ## 目的と背景
@@ -79,6 +85,8 @@ python aws_complement/run_pipeline.py \
 | `--sleep` | Misskey API のページング間隔 | 5 |
 | `--progress` | `tqdm` プログレスバーを表示 | 無効 |
 | `--log-dir` | 欠損/アップロードログを書き出すディレクトリ | `logs` |
+| `--discord-webhook` | Discord Webhook URL を直接指定 | 無効 |
+| `--discord-webhook-file` | Webhook URL を記載したファイルパス | `secrets/discord_webhook.txt` が存在すれば自動利用 |
 | `--dry-run` | 欠損状況を表示するだけで補完しない | 無効 |
 
 ### 2. 欠損状況のみ確認（JP または EN を選択）
@@ -102,6 +110,16 @@ python aws_complement/run_pipeline.py \
 - `post_*` カラム: 補完結果（アップロード先パス、ファイルサイズ、行数/ノート数）。Dry-run 時は `post_status=dry-run` になります。
 
 この CSV を参照すれば、欠損理由や補完結果を一つのファイルで追跡できます。
+
+### Discord 通知
+
+`--discord-webhook` に URL を渡すか、`secrets/discord_webhook.txt`（または `--discord-webhook-file` で指定したパス）に URL を置いておくと、ジョブ完了時に Discord へ以下の情報を送信します。
+
+- 実行ステータス（no_missing / dry_run / completed / completed_with_warnings / failed）
+- 対象期間・データセット、欠損スロット数、補完したファイル数
+- 検証残件数および CSV ログのパス
+
+`DISCORD_WEBHOOK_URL` 環境変数をセットしておけば CLI 引数なしでも通知が有効になります。失敗時はエラーメッセージも通知されるため、長時間ジョブの監視に利用できます。
 
 ---
 

@@ -15,6 +15,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
 
+import requests
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 try:  # pragma: no cover - optional dependency
@@ -131,6 +133,8 @@ class AWSComplementPipeline:
 
         self.inventory = S3SlotInventory(self.s3_client, self.sources)
 
+        self.webhook_url = self._load_webhook_url()
+
         self.client = MisskeyClient(
             base_url=args.base_url,
             token=token,
@@ -141,6 +145,26 @@ class AWSComplementPipeline:
         )
 
         self.slot_reports: List[SlotReport] = []
+
+    def _load_webhook_url(self) -> Optional[str]:
+        url = self.args.discord_webhook or os.environ.get("DISCORD_WEBHOOK_URL")
+        file_path: Optional[Path] = None
+        explicit = False
+        if self.args.discord_webhook_file:
+            file_path = Path(self.args.discord_webhook_file)
+            explicit = True
+        else:
+            default_path = Path("secrets/discord_webhook.txt")
+            if default_path.exists():
+                file_path = default_path
+        if not url and file_path:
+            if file_path.exists():
+                url = file_path.read_text(encoding="utf-8").strip()
+            elif explicit:
+                self.logger.warning("Discord webhook file not found: %s", file_path)
+        if url:
+            url = url.strip()
+        return url or None
 
     def build_slots(self) -> List[Slot]:
         slots = list(iter_slots(self.args.start_dt, self.args.end_dt, self.args.slot_minutes))
@@ -252,6 +276,41 @@ class AWSComplementPipeline:
                     ]
                 )
 
+    def _notify_completion(
+        self,
+        *,
+        status: str,
+        total_slots: int,
+        missing_slots: int,
+        uploaded: int,
+        csv_path: Optional[Path],
+        verification_remaining: Sequence[Slot],
+        error_message: Optional[str],
+    ) -> None:
+        if not self.webhook_url:
+            return
+        remaining_count = len(verification_remaining)
+        content_lines = [
+            "Misskey補完ジョブが完了しました",
+            f"ステータス: `{status}`",
+            f"対象: `{self.args.dataset}` {self.args.start_dt.isoformat()} → {self.args.end_dt.isoformat()}",
+            f"スロット: {total_slots} / 欠損: {missing_slots} / アップロード: {uploaded}",
+        ]
+        if remaining_count:
+            content_lines.append(f"検証未完了スロット: {remaining_count}")
+        if csv_path:
+            content_lines.append(f"CSV: `{csv_path}`")
+        if error_message:
+            content_lines.append(f"エラー: {error_message}")
+        payload = {
+            "content": "\n".join(content_lines)
+        }
+        try:
+            resp = requests.post(self.webhook_url, json=payload, timeout=10)
+            resp.raise_for_status()
+        except requests.RequestException as exc:
+            self.logger.warning("Failed to send Discord notification: %s", exc)
+
     def fetch_slot_notes(self, slot: Slot) -> List[dict]:
         seen_ids: set[str] = set()
         notes: List[dict] = []
@@ -357,37 +416,64 @@ class AWSComplementPipeline:
 
     def run(self) -> None:
         slots = self.build_slots()
-        missing = self.detect_missing_slots(slots)
-        self.logger.info(
-            "Total slots: %d / Missing on S3 (%s): %d",
-            len(slots),
-            self.args.dataset,
-            len(missing),
-        )
-        if not missing:
-            self.logger.info("No missing slots detected. Nothing to do.")
+        missing: List[Slot] = []
+        verification_remaining: List[Slot] = []
+        status = "unknown"
+        error_message: Optional[str] = None
+        csv_path: Optional[Path] = None
+        try:
+            missing = self.detect_missing_slots(slots)
+            self.logger.info(
+                "Total slots: %d / Missing on S3 (%s): %d",
+                len(slots),
+                self.args.dataset,
+                len(missing),
+            )
+            if not missing:
+                self.logger.info("No missing slots detected. Nothing to do.")
+                status = "no_missing"
+                return
+            if self.args.dry_run:
+                for slot in missing:
+                    self.logger.info("DRY-RUN missing: %s", slot.timestamp)
+                self._mark_all_post_status("dry-run")
+                status = "dry_run"
+                return
+
+            missing_iter = self._iter_with_progress(missing, "Complementing missing slots")
+            for idx, slot in enumerate(missing_iter, start=1):
+                self.logger.info("[%d/%d] Complementing %s", idx, len(missing), slot.timestamp)
+                notes = self.fetch_slot_notes(slot)
+                report = self.upload_notes(slot, notes)
+                self.slot_reports.append(report)
+                self._update_post_state(report)
+
+            self.logger.info(
+                "Uploaded %d complement files to s3://%s",
+                len(self.slot_reports),
+                self.dest_source.bucket,
+            )
+            verification_remaining = self.perform_verification(slots)
+            status = "completed" if not verification_remaining else "completed_with_warnings"
+        except Exception as exc:
+            status = "failed"
+            error_message = str(exc)
+            raise
+        finally:
             self._write_csv_log()
-            return
-        if self.args.dry_run:
-            for slot in missing:
-                self.logger.info("DRY-RUN missing: %s", slot.timestamp)
-            self._mark_all_post_status("dry-run")
-            self._write_csv_log()
-            return
+            if self.slot_records:
+                csv_path = self.csv_log_path
+            self._notify_completion(
+                status=status,
+                total_slots=len(slots),
+                missing_slots=len(missing),
+                uploaded=len(self.slot_reports),
+                csv_path=csv_path,
+                verification_remaining=verification_remaining,
+                error_message=error_message,
+            )
 
-        missing_iter = self._iter_with_progress(missing, "Complementing missing slots")
-        for idx, slot in enumerate(missing_iter, start=1):
-            self.logger.info("[%d/%d] Complementing %s", idx, len(missing), slot.timestamp)
-            notes = self.fetch_slot_notes(slot)
-            report = self.upload_notes(slot, notes)
-            self.slot_reports.append(report)
-            self._update_post_state(report)
-
-        self.logger.info("Uploaded %d complement files to s3://%s", len(self.slot_reports), self.dest_source.bucket)
-        self.perform_verification(slots)
-        self._write_csv_log()
-
-    def perform_verification(self, slots: Sequence[Slot]) -> None:
+    def perform_verification(self, slots: Sequence[Slot]) -> List[Slot]:
         """補完後に S3 側で欠損が残っていないか検証する。"""
         verify_inventory = S3SlotInventory(self.s3_client, self.sources + [self.dest_source])
         remaining = []
@@ -402,6 +488,7 @@ class AWSComplementPipeline:
                 self.logger.warning("  - %s", slot.timestamp)
         else:
             self.logger.info("Verification OK: no missing slots after including complement bucket.")
+        return remaining
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -438,6 +525,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true", help="欠損状況の確認のみ行う")
     parser.add_argument("--progress", action="store_true", help="tqdm でプログレスバーを表示する")
     parser.add_argument("--log-dir", default="logs", help="欠損・アップロードログを書き出すディレクトリ")
+    parser.add_argument("--discord-webhook", help="Discord Webhook URL (直接指定)")
+    parser.add_argument("--discord-webhook-file", help="Webhook URL を記載したファイルパス")
     parser.add_argument("--max-slots", type=int, help="処理するスロット数を制限（デバッグ用）")
     parser.add_argument("--verbose", action="store_true", help="デバッグログを有効化")
     return parser
