@@ -1229,8 +1229,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--early-coverage-seconds",
         type=int,
-        default=30,
-        help="期間開始から何秒以内のノートが取得できたら完了とするか (デフォルト: 30秒)",
+        default=2,
+        help="期間開始から何秒以内のノートが取得できたら完了とするか (デフォルト: 2秒)",
     )
     parser.add_argument(
         "--checkpoint-slots",
