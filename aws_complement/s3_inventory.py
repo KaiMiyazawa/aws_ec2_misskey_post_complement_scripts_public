@@ -52,6 +52,7 @@ class SlotInspection:
 
 MIN_VALID_LINES = 100
 MAX_VALID_LINES = 9999
+MIN_VALID_BYTES = 100 * 1024  # 100 KB
 
 
 class S3SlotInventory:
@@ -138,6 +139,12 @@ class S3SlotInventory:
             return False
 
         body = response["Body"]
+        ref.size_bytes = response.get("ContentLength", ref.size_bytes)
+        if ref.size_bytes is not None and ref.size_bytes <= MIN_VALID_BYTES:
+            ref.status = "too_small_bytes"
+            body.close()
+            return False
+
         line_count = 0
         try:
             for line in body.iter_lines():
