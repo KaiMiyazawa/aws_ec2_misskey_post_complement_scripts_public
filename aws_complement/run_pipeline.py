@@ -467,6 +467,10 @@ class AWSComplementPipeline:
             missing_list_path = self._write_missing_slots_log(missing)
             if missing_list_path:
                 self.logger.info("Missing slot list saved to %s", missing_list_path)
+            periods = self._group_missing_periods(missing)
+            if periods:
+                self.logger.info("Grouped missing slots into %d period(s).", len(periods))
+                self._populate_period_boundaries(periods)
             self.logger.info(
                 "Total slots: %d / Missing on S3 (%s): %d",
                 len(slots),
@@ -533,6 +537,43 @@ class AWSComplementPipeline:
         else:
             self.logger.info("Verification OK: no missing slots after including complement bucket.")
         return remaining
+
+    def _group_missing_periods(self, missing: Sequence[Slot]) -> List[List[Slot]]:
+        """欠損スロットを連続区間ごとにまとめる。"""
+        periods: List[List[Slot]] = []
+        current: List[Slot] = []
+        for slot in missing:
+            if not current:
+                current.append(slot)
+                continue
+            prev = current[-1]
+            if slot.start == prev.start + prev.duration:
+                current.append(slot)
+            else:
+                periods.append(current)
+                current = [slot]
+        if current:
+            periods.append(current)
+        return periods
+
+    def _populate_period_boundaries(self, periods: Sequence[Sequence[Slot]]) -> None:
+        """各欠損区間の前後スロットから since/until ID を計算して記録する。"""
+        for slots in periods:
+            if not slots:
+                continue
+            first = slots[0]
+            last = slots[-1]
+
+            prev_slot_start = first.start - first.duration
+            prev_ts = prev_slot_start.strftime("%Y-%m-%d_%H-%M")
+            _, prev_last_id = self.inventory.get_slot_boundaries(prev_slot_start, prev_ts)
+
+            next_slot_start = last.start + last.duration
+            next_ts = next_slot_start.strftime("%Y-%m-%d_%H-%M")
+            next_first_id, _ = self.inventory.get_slot_boundaries(next_slot_start, next_ts)
+
+            for slot in slots:
+                self._slot_boundary_cache[slot.timestamp] = (prev_last_id, next_first_id)
 
     def _compute_neighbor_ids(self, slot: Slot) -> tuple[Optional[str], Optional[str]]:
         cached = self._slot_boundary_cache.get(slot.timestamp)
