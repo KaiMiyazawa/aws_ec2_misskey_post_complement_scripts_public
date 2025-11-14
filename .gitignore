@@ -15,4 +15,4 @@ secrets/
 
 # Logs
 *.log
-logs/
+# logs/
