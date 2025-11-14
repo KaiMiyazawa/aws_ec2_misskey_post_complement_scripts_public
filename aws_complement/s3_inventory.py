@@ -213,9 +213,14 @@ class S3SlotInventory:
         first_id: Optional[str] = None
         last_id: Optional[str] = None
         try:
-            for raw in body.iter_lines(decode_unicode=True):
+            for raw in body.iter_lines():
                 if not raw:
                     continue
+                if isinstance(raw, bytes):
+                    try:
+                        raw = raw.decode("utf-8")
+                    except UnicodeDecodeError:
+                        continue
                 try:
                     note = json.loads(raw)
                 except json.JSONDecodeError:
