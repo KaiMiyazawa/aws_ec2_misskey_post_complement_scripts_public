@@ -94,6 +94,8 @@ class SlotLogRecord:
     post_size_bytes: Optional[int] = None
     post_line_count: Optional[int] = None
     post_note_count: Optional[int] = None
+    slot_since_id: Optional[str] = None
+    slot_until_id: Optional[str] = None
 
 
 class AWSComplementPipeline:
@@ -131,6 +133,7 @@ class AWSComplementPipeline:
         self.missing_slots_path = self.log_dir / f"missing_slots_{self.run_id}.csv"
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.slot_records: Dict[str, SlotLogRecord] = {}
+        self._slot_boundary_cache: Dict[str, tuple[Optional[str], Optional[str]]] = {}
 
         self.inventory = S3SlotInventory(self.s3_client, self.sources)
 
@@ -245,6 +248,8 @@ class AWSComplementPipeline:
             "pre_size_bytes",
             "pre_line_count",
             "pre_reason",
+            "slot_since_id",
+            "slot_until_id",
             "post_status",
             "post_bucket",
             "post_key",
@@ -268,6 +273,8 @@ class AWSComplementPipeline:
                         record.pre_size_bytes,
                         record.pre_line_count,
                         record.pre_reason,
+                        record.slot_since_id,
+                        record.slot_until_id,
                         record.post_status,
                         record.post_bucket,
                         record.post_key,
@@ -344,6 +351,11 @@ class AWSComplementPipeline:
     def fetch_slot_notes(self, slot: Slot) -> List[dict]:
         seen_ids: set[str] = set()
         notes: List[dict] = []
+        slot_since_id, slot_until_id = self._resolve_slot_id_bounds(slot)
+        record = self.slot_records.get(slot.timestamp)
+        if record:
+            record.slot_since_id = slot_since_id
+            record.slot_until_id = slot_until_id
 
         if self.args.sub_slot_seconds:
             delta = timedelta(seconds=self.args.sub_slot_seconds)
@@ -357,8 +369,8 @@ class AWSComplementPipeline:
                     max_pages=self.args.max_pages,
                     sleep=self.args.sleep,
                     seen_ids=seen_ids,
-                    since_id=self.args.since_id,
-                    until_id=self.args.until_id,
+                    since_id=slot_since_id,
+                    until_id=slot_until_id,
                     early_coverage_seconds=self.args.early_coverage_seconds,
                 )
                 notes.extend(sub_notes)
@@ -372,8 +384,8 @@ class AWSComplementPipeline:
                 max_pages=self.args.max_pages,
                 sleep=self.args.sleep,
                 seen_ids=seen_ids,
-                since_id=self.args.since_id,
-                until_id=self.args.until_id,
+                since_id=slot_since_id,
+                until_id=slot_until_id,
                 early_coverage_seconds=self.args.early_coverage_seconds,
             )
         if not self.args.keep_non_japanese:
@@ -521,6 +533,31 @@ class AWSComplementPipeline:
         else:
             self.logger.info("Verification OK: no missing slots after including complement bucket.")
         return remaining
+
+    def _compute_neighbor_ids(self, slot: Slot) -> tuple[Optional[str], Optional[str]]:
+        cached = self._slot_boundary_cache.get(slot.timestamp)
+        if cached is not None:
+            return cached
+
+        prev_slot_start = slot.start - slot.duration
+        prev_ts = prev_slot_start.strftime("%Y-%m-%d_%H-%M")
+        _, prev_last_id = self.inventory.get_slot_boundaries(prev_slot_start, prev_ts)
+
+        next_slot_start = slot.start + slot.duration
+        next_ts = next_slot_start.strftime("%Y-%m-%d_%H-%M")
+        next_first_id, _ = self.inventory.get_slot_boundaries(next_slot_start, next_ts)
+
+        result = (prev_last_id, next_first_id)
+        self._slot_boundary_cache[slot.timestamp] = result
+        return result
+
+    def _resolve_slot_id_bounds(self, slot: Slot) -> tuple[Optional[str], Optional[str]]:
+        since_id, until_id = self._compute_neighbor_ids(slot)
+        if self.args.since_id:
+            since_id = self.args.since_id
+        if self.args.until_id:
+            until_id = self.args.until_id
+        return since_id, until_id
 
 
 def build_parser() -> argparse.ArgumentParser:

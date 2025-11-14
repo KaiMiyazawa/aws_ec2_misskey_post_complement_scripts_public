@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import json
 import logging
 from typing import Any, Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING
 
@@ -40,6 +41,8 @@ class SlotObjectRef:
     line_count: Optional[int] = None
     valid: Optional[bool] = None
     status: str = "unknown"
+    first_note_id: Optional[str] = None
+    last_note_id: Optional[str] = None
 
 
 @dataclass
@@ -195,6 +198,53 @@ class S3SlotInventory:
             else:
                 status = ref.status or "invalid"
         return SlotInspection(slot_ts=slot_ts, refs=refs, valid_ref=valid_ref, status=status)
+
+    def _populate_boundary_ids(self, ref: SlotObjectRef) -> bool:
+        """S3 オブジェクトから最初/最後のノートIDを抽出してキャッシュする。"""
+        if ref.first_note_id is not None or ref.last_note_id is not None:
+            return True
+        try:
+            response = self._client.get_object(Bucket=ref.bucket, Key=ref.key)
+        except ClientError as exc:
+            logging.warning("Failed to fetch %s/%s for boundary ids: %s", ref.bucket, ref.key, exc)
+            return False
+
+        body = response["Body"]
+        first_id: Optional[str] = None
+        last_id: Optional[str] = None
+        try:
+            for raw in body.iter_lines(decode_unicode=True):
+                if not raw:
+                    continue
+                try:
+                    note = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                note_id = note.get("id")
+                if not note_id:
+                    continue
+                if first_id is None:
+                    first_id = note_id
+                last_id = note_id
+        finally:
+            body.close()
+
+        ref.first_note_id = first_id
+        ref.last_note_id = last_id
+        return first_id is not None or last_id is not None
+
+    def get_slot_boundaries(self, slot_start: datetime, slot_ts: str) -> Tuple[Optional[str], Optional[str]]:
+        """指定スロットのファイルから (最古ID, 最新ID) を取得する。"""
+        day_key = self._day_key(slot_start)
+        self._ensure_day_cached(day_key, slot_start)
+        refs = list(self._cache.get(day_key, {}).get(slot_ts, []))
+        if not refs:
+            return (None, None)
+
+        for ref in refs:
+            if self._populate_boundary_ids(ref):
+                return (ref.first_note_id, ref.last_note_id)
+        return (None, None)
 
     def refresh_cache(self) -> None:
         """EC2 長期稼働時に呼び出してキャッシュをクリアする。"""
