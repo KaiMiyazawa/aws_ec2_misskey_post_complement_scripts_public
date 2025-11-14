@@ -18,8 +18,6 @@ Misskey API を利用して指定期間の欠損スロットを後追い取得�
         --token $MISSKEY_TOKEN
 
 注意事項:
-    - `sinceDate` / `untilDate` パラメータで範囲検索できるように Misskey 側で
-      検索機能が有効化されている必要がある。
     - グローバルタイムラインを対象としているため、必要に応じて
       `--channel` や検索条件を調整して利用すること。
 """
@@ -48,7 +46,6 @@ DEFAULT_LIMIT = 100  # API 1回あたりの取得件数上限
 DEFAULT_SLOT_MINUTES = 10  # 1スロットの時間幅（分単位）
 DEFAULT_MODE = "search"  # データ取得モード（search または timeline）
 DEFAULT_CHECKPOINT_SLOTS = 1  # 何スロット分取得するごとに中間保存するか
-
 def debug(msg: str) -> None:
     """デバッグメッセージを標準エラー出力に表示
 
@@ -233,7 +230,6 @@ class MisskeyClient:
         period_start: datetime,
         period_end: datetime,
         limit: int = DEFAULT_LIMIT,
-        query: Optional[str] = None,
         host: Optional[str] = None,
         max_pages: Optional[int] = None,
         sleep: float = 0.0,
@@ -253,7 +249,6 @@ class MisskeyClient:
             period_start: Period開始時刻（timezone-aware）
             period_end: Period終了時刻（timezone-aware）
             limit: API 1回あたりの取得件数上限
-            query: 検索クエリ（現在は使用されていない）
             host: 特定ホストに限定する場合に指定
             max_pages: ページネーションの上限回数
             sleep: API呼び出し間隔（秒）
@@ -392,8 +387,6 @@ class MisskeyClient:
                 payload["sinceId"] = since_id
             if until_id:
                 payload["untilId"] = until_id
-            if query:
-                payload["query"] = query
             if host:
                 payload["host"] = host
 
@@ -452,7 +445,6 @@ class MisskeyClient:
         start: datetime,
         end: datetime,
         limit: int = DEFAULT_LIMIT,
-        query: Optional[str] = None,
         host: Optional[str] = None,
         max_pages: Optional[int] = None,
         sleep: float = 0.0,
@@ -472,7 +464,6 @@ class MisskeyClient:
             start: 取得対象期間の開始時刻（timezone-aware）
             end: 取得対象期間の終了時刻（timezone-aware）
             limit: API 1回あたりの取得件数上限
-            query: 検索クエリ（現在は使用されていない）
             host: 特定ホストに限定する場合に指定
             max_pages: ページネーションの上限回数
             sleep: API呼び出し間隔（秒）
@@ -484,10 +475,6 @@ class MisskeyClient:
         Returns:
             取得したノートのリスト（時間範囲でフィルタ済み、createdAtでソート済み）
         """
-
-        # sinceDate/untilDateは機能しないためコメントアウト
-        # since_ms = int(start.astimezone(timezone.utc).timestamp() * 1000)
-        # until_ms = int(end.astimezone(timezone.utc).timestamp() * 1000)
 
         # 重複除去用のIDセットを準備
         local_seen: set[str]
@@ -637,17 +624,12 @@ class MisskeyClient:
             # 注: このモードは現在あまり使用されていない
             payload = {
                 "limit": limit,
-                # sinceDate/untilDateはMisskey側で正常に動作しないためコメントアウト
-                # "sinceDate": since_ms,
-                # "untilDate": until_ms,
             }
             # sinceId/untilIdを使用してID範囲指定
             if since_id:
                 payload["sinceId"] = since_id
             if until_id:
                 payload["untilId"] = until_id
-            if query:
-                payload["query"] = query
             if host:
                 payload["host"] = host
 
@@ -1029,7 +1011,6 @@ def main_period_mode(
             period_start=start_dt,
             period_end=end_dt,
             limit=args.limit,
-            query=args.query,
             host=args.host,
             max_pages=args.max_pages,
             sleep=args.sleep,
@@ -1167,10 +1148,6 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         choices=["search", "timeline"],
         default=DEFAULT_MODE,
         help="取得方法を指定。search は notes/search、timeline は timeline 系エンドポイントを利用",
-    )
-    parser.add_argument(
-        "--query",
-        help="検索クエリ（非推奨：現在は使用されていません）",
     )
     parser.add_argument(
         "--host",
@@ -1332,7 +1309,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
 
     # Misskey APIクライアントを初期化
-    client = MisskeyClient(base_url=args.base_url, token=token, endpoint=endpoint)
+    client = MisskeyClient(
+        base_url=args.base_url,
+        token=token,
+        endpoint=endpoint,
+    )
 
     # モード選択: --legacy-mode が指定されている場合は従来の処理
     if args.legacy_mode:
@@ -1395,7 +1376,6 @@ def main_legacy_mode(
                     start=sub_start,
                     end=sub_end,
                     limit=args.limit,
-                    query=args.query,
                     host=args.host,
                     max_pages=args.max_pages,
                     sleep=args.sleep,

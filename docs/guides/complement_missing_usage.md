@@ -1,6 +1,6 @@
 # 補完スクリプトの使い方
 
-`scripts/pipeline/complement_missing.py` は、既存の `data/` ディレクトリで欠損している 10 分刻みのスロットを Misskey API から後追い取得し、`data_complement/` 以下に保存します。収集済みデータと同じファイル名・ディレクトリ構造で出力されるため、そのまま分析に利用できます。`notes/search` を利用する「search」モードと、`notes/global-timeline` などで `sinceDate` / `untilDate` に対応している場合に使える「timeline」モードを切り替えられます。さらに `--sub-slot-seconds` を指定すると、1 スロットを細かく分割して順次取得・重複除去したうえで結合できます。
+`scripts/pipeline/complement_missing.py` は、既存の `data/` ディレクトリで欠損している 10 分刻みのスロットを Misskey API から後追い取得し、`data_complement/` 以下に保存します。収集済みデータと同じファイル名・ディレクトリ構造で出力されるため、そのまま分析に利用できます。`notes/search` を利用する「search」モードと、`notes/global-timeline` など timeline 系 API を使う「timeline」モードを切り替えられます。search モードでは `untilId` を段階的に更新しながら過去へ遡り、余計な最新投稿を経由せずに目的スロットへ到達します。さらに `--sub-slot-seconds` を指定すると、1 スロットを細かく分割して順次取得・重複除去したうえで結合できます。
 
 ## 前提条件
 
@@ -15,7 +15,6 @@ python scripts/pipeline/complement_missing.py \
   --start 2025-08-14T22:10 \
   --end 2025-08-23T08:50 \
   --mode timeline \
-  --query '*' \
   --token "$MISSKEY_TOKEN"
 ```
 
@@ -50,7 +49,7 @@ python scripts/pipeline/complement_missing_search.py \
 ```
 
 - `--sub-slot-seconds` を付けると時間範囲を細分化して取得します。
-- 既定で `--query '*' --limit 100 --max-pages 100 --sleep 5 --overwrite` を指定した状態で `complement_missing.py` を呼び出します。
+- 既定で `--limit 100 --max-pages 100 --sleep 5 --overwrite` を指定した状態で `complement_missing.py` を呼び出します。
 
 > **補足:** Timeline API (`notes/global-timeline`) だけでは、時間範囲の前半が返ってこないケースがあります。10 分枠の投稿数が多い日時や長期欠損を埋める際は、まず timeline で大まかに補完し、足りない部分をさらにこの notes/search モードで補うと取りこぼしを減らせます。
 
@@ -74,14 +73,12 @@ python scripts/pipeline/run_complement_and_verify.py 2025-07-16_12-10 \
 
 ## 主なオプション
 
-- `notes/search` を利用する際は `--query` を必ず指定してください。全件対象にする場合は `--query '*'` のように指定します。
 - Misskey のバージョンによっては `notes/global-timeline` などで `sinceDate` / `untilDate` を利用できるため、その場合は `--mode timeline` と `--endpoint notes/global-timeline` を併用すると時間範囲で取得できます。本スクリプトでは `id` ベースで重複を排除しつつページングします。
 
 - `--slot-minutes`: スロット幅（既定値 10）
 - `--base-url`: Misskey API のベース URL（既定値 `https://misskey.io`）
 - `--mode`: `search` または `timeline` を指定。`timeline` の場合は `notes/global-timeline` 等を利用
 - `--endpoint`: 利用するエンドポイント（既定値 `notes/search`）
-- `--query`: `search` モードで利用するクエリ文字列（例: `*`, `lang:ja`）
 - `--sub-slot-seconds`: 1 スロットをこの秒数単位に分割して取得し結合（例: `--sub-slot-seconds 60` で 1 分刻み）
 - `--limit`: 1 リクエストあたりの取得件数（既定値 100）
 - `--max-pages`: ページネーションの上限
@@ -99,7 +96,6 @@ python scripts/pipeline/complement_missing.py \
   --start 2025-08-14T22:10 \
   --end 2025-08-23T08:50 \
   --mode timeline \
-  --query '*' \
   --dry-run
 ```
 

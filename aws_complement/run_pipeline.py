@@ -128,6 +128,7 @@ class AWSComplementPipeline:
         self.run_id = f"{self.args.dataset}_{self.args.start_dt:%Y%m%d%H%M}_{self.args.end_dt:%Y%m%d%H%M}"
         self.log_dir = Path(self.args.log_dir)
         self.csv_log_path = self.log_dir / f"complement_log_{self.run_id}.csv"
+        self.missing_slots_path = self.log_dir / f"missing_slots_{self.run_id}.csv"
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.slot_records: Dict[str, SlotLogRecord] = {}
 
@@ -272,9 +273,38 @@ class AWSComplementPipeline:
                         record.post_key,
                         record.post_size_bytes,
                         record.post_line_count,
-                        record.post_note_count,
+                record.post_note_count,
                     ]
                 )
+
+    def _write_missing_slots_log(self, missing: Sequence[Slot]) -> Optional[Path]:
+        """欠損スロット一覧を CSV で出力する。補完開始前の確認用。"""
+        if not missing:
+            return None
+        header = [
+            "slot_timestamp",
+            "slot_start_iso",
+            "pre_status",
+            "pre_bucket",
+            "pre_key",
+            "pre_size_bytes",
+        ]
+        with self.missing_slots_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(header)
+            for slot in sorted(missing, key=lambda s: s.start):
+                record = self.slot_records.get(slot.timestamp)
+                writer.writerow(
+                    [
+                        slot.timestamp,
+                        slot.start.isoformat(),
+                        record.pre_status if record else None,
+                        record.pre_bucket if record else None,
+                        record.pre_key if record else None,
+                        record.pre_size_bytes if record else None,
+                    ]
+                )
+        return self.missing_slots_path
 
     def _notify_completion(
         self,
@@ -323,7 +353,6 @@ class AWSComplementPipeline:
                     start=sub_start,
                     end=sub_end,
                     limit=self.args.limit,
-                    query=self.args.query,
                     host=self.args.host,
                     max_pages=self.args.max_pages,
                     sleep=self.args.sleep,
@@ -339,7 +368,6 @@ class AWSComplementPipeline:
                 start=slot.start,
                 end=slot.end,
                 limit=self.args.limit,
-                query=self.args.query,
                 host=self.args.host,
                 max_pages=self.args.max_pages,
                 sleep=self.args.sleep,
@@ -421,8 +449,12 @@ class AWSComplementPipeline:
         status = "unknown"
         error_message: Optional[str] = None
         csv_path: Optional[Path] = None
+        missing_list_path: Optional[Path] = None
         try:
             missing = self.detect_missing_slots(slots)
+            missing_list_path = self._write_missing_slots_log(missing)
+            if missing_list_path:
+                self.logger.info("Missing slot list saved to %s", missing_list_path)
             self.logger.info(
                 "Total slots: %d / Missing on S3 (%s): %d",
                 len(slots),
@@ -517,7 +549,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--early-coverage-seconds", type=int, default=2, help="開始カバレッジ判定の閾値（秒）")
     parser.add_argument("--since-id", help="Misskey API sinceId")
     parser.add_argument("--until-id", help="Misskey API untilId")
-    parser.add_argument("--query", help="notes/search の query")
     parser.add_argument("--host", help="notes/search の host フィルタ")
     parser.add_argument("--timeout", type=int, default=30, help="Misskey API タイムアウト秒")
     parser.add_argument("--retry", type=int, default=3, help="Misskey API リトライ回数")

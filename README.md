@@ -132,7 +132,7 @@ python aws_complement/run_pipeline.py \
    `scripts/pipeline/complement_missing.py` に定義済みの `Slot`/`iter_slots` を再利用し、指定期間の 10 分枠を列挙。S3 に `.jsonl` が存在しても **行数が 100 以下または 10,000 以上（エラーデータ）であれば欠損扱い** としてリストアップします。
 
 3. **Misskey API で補完**  
-   既存の `MisskeyClient` をモジュールとしてロードし、`notes/search` (または timeline 系 API) を呼び出します。`--sub-slot-seconds` に応じて 1 分刻みなどで細分化し、`seen_ids` を共有しながら重複を排除します。取得したノートはその場で JSON Lines にシリアライズし、ローカルファイルを作らずに S3 へアップロードします。
+   既存の `MisskeyClient` をモジュールとしてロードし、`notes/search` (または timeline 系 API) を呼び出します。`search` モードでは `untilId` を段階的に更新しながら過去へ遡ることで対象スロットへ到達します。`--sub-slot-seconds` に応じて 1 分刻みなどで細分化し、`seen_ids` を共有しながら重複を排除します。取得したノートはその場で JSON Lines にシリアライズし、ローカルファイルを作らずに S3 へアップロードします。
 
 4. **S3 へ保存**  
    デフォルトでは `s3://miyazawa1s3/misskey_complement/YYYY/MM/DD/HH/スロット.jsonl` に保存。S3 メタデータにノート数・最古/最新時刻を記録しておくことで、後工程での Spot チェックが容易になります。
