@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -348,6 +349,30 @@ class AWSComplementPipeline:
         except requests.RequestException as exc:
             self.logger.warning("Failed to send Discord notification: %s", exc)
 
+    def _handle_rate_limit(self, exc: requests.HTTPError, slot: Slot, sub_range: Optional[tuple[datetime, datetime]] = None) -> bool:
+        response = exc.response
+        if response is None or response.status_code != 429:
+            return False
+        wait_seconds = self.args.retry_wait if self.args.retry_wait else 1.0
+        retry_after = response.headers.get("Retry-After")
+        if retry_after:
+            try:
+                wait_seconds = max(wait_seconds, float(retry_after))
+            except ValueError:
+                pass
+        time_desc = ""
+        if sub_range:
+            start, end = sub_range
+            time_desc = f" sub-slot {start.strftime('%H:%M:%S')}–{end.strftime('%H:%M:%S')}"
+        self.logger.warning(
+            "Misskey API rate limit hit while fetching %s%s. Sleeping %.1f seconds before retrying.",
+            slot.timestamp,
+            time_desc,
+            wait_seconds,
+        )
+        time.sleep(wait_seconds)
+        return True
+
     def fetch_slot_notes(self, slot: Slot) -> List[dict]:
         seen_ids: set[str] = set()
         notes: List[dict] = []
@@ -360,34 +385,46 @@ class AWSComplementPipeline:
         if self.args.sub_slot_seconds:
             delta = timedelta(seconds=self.args.sub_slot_seconds)
             for sub_start, sub_end in iter_sub_ranges(slot.start, slot.end, delta):
-                sub_notes = self.client.fetch_notes(
-                    mode=self.args.mode,
-                    start=sub_start,
-                    end=sub_end,
-                    limit=self.args.limit,
-                    host=self.args.host,
-                    max_pages=self.args.max_pages,
-                    sleep=self.args.sleep,
-                    seen_ids=seen_ids,
-                    since_id=slot_since_id,
-                    until_id=slot_until_id,
-                    early_coverage_seconds=self.args.early_coverage_seconds,
-                )
+                while True:
+                    try:
+                        sub_notes = self.client.fetch_notes(
+                            mode=self.args.mode,
+                            start=sub_start,
+                            end=sub_end,
+                            limit=self.args.limit,
+                            host=self.args.host,
+                            max_pages=self.args.max_pages,
+                            sleep=self.args.sleep,
+                            seen_ids=seen_ids,
+                            since_id=slot_since_id,
+                            until_id=slot_until_id,
+                            early_coverage_seconds=self.args.early_coverage_seconds,
+                        )
+                        break
+                    except requests.HTTPError as exc:
+                        if not self._handle_rate_limit(exc, slot, (sub_start, sub_end)):
+                            raise
                 notes.extend(sub_notes)
         else:
-            notes = self.client.fetch_notes(
-                mode=self.args.mode,
-                start=slot.start,
-                end=slot.end,
-                limit=self.args.limit,
-                host=self.args.host,
-                max_pages=self.args.max_pages,
-                sleep=self.args.sleep,
-                seen_ids=seen_ids,
-                since_id=slot_since_id,
-                until_id=slot_until_id,
-                early_coverage_seconds=self.args.early_coverage_seconds,
-            )
+            while True:
+                try:
+                    notes = self.client.fetch_notes(
+                        mode=self.args.mode,
+                        start=slot.start,
+                        end=slot.end,
+                        limit=self.args.limit,
+                        host=self.args.host,
+                        max_pages=self.args.max_pages,
+                        sleep=self.args.sleep,
+                        seen_ids=seen_ids,
+                        since_id=slot_since_id,
+                        until_id=slot_until_id,
+                        early_coverage_seconds=self.args.early_coverage_seconds,
+                    )
+                    break
+                except requests.HTTPError as exc:
+                    if not self._handle_rate_limit(exc, slot):
+                        raise
         if not self.args.keep_non_japanese:
             notes = filter_japanese_notes(notes)
         return notes
