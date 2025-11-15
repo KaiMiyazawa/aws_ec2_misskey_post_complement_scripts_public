@@ -693,7 +693,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int, default=100, help="Misskey API の limit")
     parser.add_argument("--max-pages", type=int, help="ページネーション上限")
     parser.add_argument("--sleep", type=float, default=5.0, help="API 呼び出し間隔（秒）")
-    parser.add_argument("--sub-slot-seconds", type=int, default=60, help="補完時のサブスロット幅（秒）")
+    parser.add_argument(
+        "--sub-slot-seconds",
+        type=int,
+        default=0,
+        help="補完時のサブスロット幅（秒, 0 で分割しない）",
+    )
     parser.add_argument("--keep-non-japanese", action="store_true", help="日本語以外も保存する")
     parser.add_argument("--early-coverage-seconds", type=int, default=2, help="開始カバレッジ判定の閾値（秒）")
     parser.add_argument("--since-id", help="Misskey API sinceId")
