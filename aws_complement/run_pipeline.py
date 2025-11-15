@@ -27,9 +27,15 @@ except ImportError:  # pragma: no cover
 
 if __package__ is None:
     sys.path.insert(0, str(REPO_ROOT))
-    from aws_complement.s3_inventory import BucketSource, S3SlotInventory, SlotInspection, build_s3_client
+from aws_complement.s3_inventory import (
+    BucketSource,
+    S3SlotInventory,
+    SlotInspection,
+    SlotObjectRef,
+    build_s3_client,
+)
 else:  # pragma: no cover
-    from .s3_inventory import BucketSource, S3SlotInventory, SlotInspection, build_s3_client
+    from .s3_inventory import BucketSource, S3SlotInventory, SlotInspection, SlotObjectRef, build_s3_client
 
 JST = timezone(timedelta(hours=9))
 
@@ -137,6 +143,11 @@ class AWSComplementPipeline:
         self._slot_boundary_cache: Dict[str, tuple[Optional[str], Optional[str]]] = {}
 
         self.inventory = S3SlotInventory(self.s3_client, self.sources)
+        boundary_sources = list(self.sources)
+        if args.resume:
+            boundary_sources.append(self.dest_source)
+        self.boundary_inventory = S3SlotInventory(self.s3_client, boundary_sources)
+        self.resume_inventory = S3SlotInventory(self.s3_client, [self.dest_source]) if args.resume else None
 
         self.webhook_url = self._load_webhook_url()
 
@@ -185,6 +196,11 @@ class AWSComplementPipeline:
             if inspection.valid_ref:
                 continue
             self._record_pre_state(slot, inspection)
+            if self.resume_inventory:
+                resume_check = self.resume_inventory.inspect_slot(slot.start, slot.timestamp)
+                if resume_check.valid_ref:
+                    self._record_resume_state(slot, resume_check.valid_ref)
+                    continue
             missing.append(slot)
         return missing
 
@@ -218,6 +234,18 @@ class AWSComplementPipeline:
             pre_reason=inspection.status,
         )
         self.slot_records[slot.timestamp] = record
+
+    def _record_resume_state(self, slot: Slot, ref: SlotObjectRef) -> None:
+        record = self.slot_records.get(slot.timestamp)
+        if not record:
+            return
+        record.post_status = "resume_skipped"
+        record.post_bucket = ref.bucket
+        record.post_key = ref.key
+        record.post_size_bytes = ref.size_bytes
+        record.post_line_count = ref.line_count
+        record.post_note_count = ref.line_count
+        record.pre_reason = "resume_skipped"
 
     def _update_post_state(self, report: SlotReport) -> None:
         record = self.slot_records.get(report.slot.timestamp)
@@ -603,11 +631,11 @@ class AWSComplementPipeline:
 
             prev_slot_start = first.start - first.duration
             prev_ts = prev_slot_start.strftime("%Y-%m-%d_%H-%M")
-            _, prev_last_id = self.inventory.get_slot_boundaries(prev_slot_start, prev_ts)
+            _, prev_last_id = self.boundary_inventory.get_slot_boundaries(prev_slot_start, prev_ts)
 
             next_slot_start = last.start + last.duration
             next_ts = next_slot_start.strftime("%Y-%m-%d_%H-%M")
-            next_first_id, _ = self.inventory.get_slot_boundaries(next_slot_start, next_ts)
+            next_first_id, _ = self.boundary_inventory.get_slot_boundaries(next_slot_start, next_ts)
 
             for slot in slots:
                 self._slot_boundary_cache[slot.timestamp] = (prev_last_id, next_first_id)
@@ -619,11 +647,11 @@ class AWSComplementPipeline:
 
         prev_slot_start = slot.start - slot.duration
         prev_ts = prev_slot_start.strftime("%Y-%m-%d_%H-%M")
-        _, prev_last_id = self.inventory.get_slot_boundaries(prev_slot_start, prev_ts)
+        _, prev_last_id = self.boundary_inventory.get_slot_boundaries(prev_slot_start, prev_ts)
 
         next_slot_start = slot.start + slot.duration
         next_ts = next_slot_start.strftime("%Y-%m-%d_%H-%M")
-        next_first_id, _ = self.inventory.get_slot_boundaries(next_slot_start, next_ts)
+        next_first_id, _ = self.boundary_inventory.get_slot_boundaries(next_slot_start, next_ts)
 
         result = (prev_last_id, next_first_id)
         self._slot_boundary_cache[slot.timestamp] = result
@@ -669,6 +697,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--retry", type=int, default=3, help="Misskey API リトライ回数")
     parser.add_argument("--retry-wait", type=float, default=5.0, help="Misskey API リトライ間隔（秒）")
     parser.add_argument("--dry-run", action="store_true", help="欠損状況の確認のみ行う")
+    parser.add_argument("--resume", action="store_true", help="補完バケット済みスロットをスキップする")
     parser.add_argument("--progress", action="store_true", help="tqdm でプログレスバーを表示する")
     parser.add_argument("--log-dir", default="logs", help="欠損・アップロードログを書き出すディレクトリ")
     parser.add_argument("--discord-webhook", help="Discord Webhook URL (直接指定)")
