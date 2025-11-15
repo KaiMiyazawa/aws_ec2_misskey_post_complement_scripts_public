@@ -27,15 +27,21 @@ except ImportError:  # pragma: no cover
 
 if __package__ is None:
     sys.path.insert(0, str(REPO_ROOT))
-from aws_complement.s3_inventory import (
-    BucketSource,
-    S3SlotInventory,
-    SlotInspection,
-    SlotObjectRef,
-    build_s3_client,
-)
+    from aws_complement.s3_inventory import (
+        BucketSource,
+        S3SlotInventory,
+        SlotInspection,
+        SlotObjectRef,
+        build_s3_client,
+    )
 else:  # pragma: no cover
-    from .s3_inventory import BucketSource, S3SlotInventory, SlotInspection, SlotObjectRef, build_s3_client
+    from .s3_inventory import (
+        BucketSource,
+        S3SlotInventory,
+        SlotInspection,
+        SlotObjectRef,
+        build_s3_client,
+    )
 
 JST = timezone(timedelta(hours=9))
 
