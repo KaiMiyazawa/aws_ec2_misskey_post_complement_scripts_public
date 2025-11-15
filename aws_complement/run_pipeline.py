@@ -20,6 +20,14 @@ import requests
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+DEFAULT_PRIMARY_BUCKET = "miyazawa1s3"
+DEFAULT_PRIMARY_PREFIX = "misskey"
+DEFAULT_BACKUP_BUCKET = "miyazawa1s3-backup"
+DEFAULT_BACKUP_PREFIX = "misskey"
+DEFAULT_COMPLEMENT_BUCKET = "miyazawa1s3"
+DEFAULT_COMPLEMENT_PREFIX_JP = "misskey_complement"
+DEFAULT_COMPLEMENT_PREFIX_EN = "misskey_complement_en"
+
 try:  # pragma: no cover - optional dependency
     from tqdm import tqdm
 except ImportError:  # pragma: no cover
@@ -677,13 +685,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--start", required=True, type=parse_jst, help="開始日時 (JST, 例: 2025-08-01T00:00)")
     parser.add_argument("--end", required=True, type=parse_jst, help="終了日時 (JST, 例: 2025-08-02T23:50)")
     parser.add_argument("--slot-minutes", type=int, default=10, help="スロット幅（分）")
-    parser.add_argument("--primary-bucket", default="miyazawa1s3", help="一次バケット名")
-    parser.add_argument("--primary-prefix", default="misskey", help="一次バケット側のプレフィックス")
-    parser.add_argument("--backup-bucket", default="miyazawa1s3-backup", help="バックアップバケット名")
-    parser.add_argument("--backup-prefix", default="misskey", help="バックアップ側のプレフィックス")
+    parser.add_argument("--primary-bucket", default=DEFAULT_PRIMARY_BUCKET, help="一次バケット名")
+    parser.add_argument("--primary-prefix", default=DEFAULT_PRIMARY_PREFIX, help="一次バケット側のプレフィックス")
+    parser.add_argument("--backup-bucket", default=DEFAULT_BACKUP_BUCKET, help="バックアップバケット名")
+    parser.add_argument("--backup-prefix", default=DEFAULT_BACKUP_PREFIX, help="バックアップ側のプレフィックス")
     parser.add_argument("--dataset", choices=["jp", "en"], default="jp", help="欠損チェック対象 (jp: 一次, en: バックアップ)")
-    parser.add_argument("--complement-bucket", default="miyazawa1s3", help="補完結果を保存するバケット")
-    parser.add_argument("--complement-prefix", default="misskey_complement", help="補完結果のプレフィックス")
+    parser.add_argument(
+        "--complement-bucket",
+        default=None,
+        help="補完結果を保存するバケット (未指定時は %s)" % DEFAULT_COMPLEMENT_BUCKET,
+    )
+    parser.add_argument(
+        "--complement-prefix",
+        default=None,
+        help="補完結果のプレフィックス (データセットに応じて自動設定)",
+    )
     parser.add_argument("--aws-region", help="AWS リージョン (例: ap-northeast-1)")
     parser.add_argument("--aws-profile", help="boto3 用の AWS プロファイル名")
     parser.add_argument("--token", help="Misskey API トークン (未指定時は MISSKEY_TOKEN 環境変数)")
@@ -731,6 +747,13 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     args = parser.parse_args(argv)
     args.start_dt = args.start  # store parsed datetimes
     args.end_dt = args.end
+    if args.complement_bucket is None:
+        args.complement_bucket = DEFAULT_COMPLEMENT_BUCKET
+    if args.complement_prefix is None:
+        if args.dataset == "en":
+            args.complement_prefix = DEFAULT_COMPLEMENT_PREFIX_EN
+        else:
+            args.complement_prefix = DEFAULT_COMPLEMENT_PREFIX_JP
     configure_logging(args.verbose)
     pipeline = AWSComplementPipeline(args)
     pipeline.run()
