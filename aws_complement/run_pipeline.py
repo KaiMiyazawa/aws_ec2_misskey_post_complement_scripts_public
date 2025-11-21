@@ -415,10 +415,21 @@ class AWSComplementPipeline:
         time.sleep(wait_seconds)
         return True
 
-    def fetch_slot_notes(self, slot: Slot) -> List[dict]:
-        seen_ids: set[str] = set()
+    def fetch_slot_notes(
+        self,
+        slot: Slot,
+        *,
+        since_id: Optional[str] = None,
+        until_id: Optional[str] = None,
+        shared_seen_ids: Optional[set[str]] = None,
+    ) -> tuple[List[dict], Optional[str]]:
+        seen_ids: set[str] = shared_seen_ids if shared_seen_ids is not None else set()
         notes: List[dict] = []
         slot_since_id, slot_until_id = self._resolve_slot_id_bounds(slot)
+        if since_id is not None:
+            slot_since_id = since_id
+        if until_id is not None:
+            slot_until_id = until_id
         record = self.slot_records.get(slot.timestamp)
         if record:
             record.slot_since_id = slot_since_id
@@ -467,9 +478,11 @@ class AWSComplementPipeline:
                 except requests.HTTPError as exc:
                     if not self._handle_rate_limit(exc, slot):
                         raise
+        boundary_earliest_id = notes[0].get("id") if notes else None
         if not self.args.keep_non_japanese:
             notes = filter_japanese_notes(notes)
-        return notes
+        filtered_earliest_id = notes[0].get("id") if notes else None
+        return notes, filtered_earliest_id or boundary_earliest_id
 
     def build_s3_key(self, slot: Slot) -> str:
         date_prefix = f"{slot.start.astimezone(JST):%Y/%m/%d/%H}"
@@ -567,13 +580,36 @@ class AWSComplementPipeline:
                 status = "dry_run"
                 return
 
-            missing_iter = self._iter_with_progress(missing, "Complementing missing slots")
-            for idx, slot in enumerate(missing_iter, start=1):
-                self.logger.info("[%d/%d] Complementing %s", idx, len(missing), slot.timestamp)
-                notes = self.fetch_slot_notes(slot)
-                report = self.upload_notes(slot, notes)
-                self.slot_reports.append(report)
-                self._update_post_state(report)
+            processed_slots = 0
+            for p_idx, period in enumerate(periods, start=1):
+                period_desc = f"[Period {p_idx}/{len(periods)}] {len(period)} slot(s)"
+                self.logger.info("%s: complementing from most recent slot backward", period_desc)
+                shared_seen_ids: set[str] = set()
+                period_slots = list(period)
+                _, period_until_id = self._compute_neighbor_ids(period_slots[0])
+                period_since_id, _ = self._compute_neighbor_ids(period_slots[-1])
+                for slot in reversed(period_slots):
+                    processed_slots += 1
+                    self.logger.info(
+                        "  [%d/%d] Complementing %s (untilId=%s)",
+                        processed_slots,
+                        len(missing),
+                        slot.timestamp,
+                        period_until_id,
+                    )
+                    notes, earliest_id = self.fetch_slot_notes(
+                        slot,
+                        since_id=period_since_id,
+                        until_id=period_until_id,
+                        shared_seen_ids=shared_seen_ids,
+                    )
+                    report = self.upload_notes(slot, notes)
+                    self.slot_reports.append(report)
+                    self._update_post_state(report)
+                    if earliest_id:
+                        period_until_id = earliest_id
+                    elif period_since_id:
+                        period_until_id = period_since_id
 
             self.logger.info(
                 "Uploaded %d complement files to s3://%s",
